@@ -1427,6 +1427,224 @@ Return:
 
 ------------------------------------------------------------------------
 
+## Controller Examples
+
+This is what the controller logic often looks like in a simple Express
+application. These are beginner-friendly examples that match the flow we
+have been discussing.
+
+### Register Controller Example
+
+``` js
+import bcrypt from "bcryptjs";
+import { User } from "../models/User.js";
+
+export const registerController = async (req, res) => {
+  const { name, email, password } = req.body;
+
+  if (!name || !email || !password) {
+    return res.status(400).json({
+      message: "Name, email, and password are required",
+    });
+  }
+
+  const existingUser = await User.findOne({
+    email: email.toLowerCase(),
+  });
+
+  if (existingUser) {
+    return res.status(409).json({
+      message: "User already exists",
+    });
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+
+  const user = await User.create({
+    name,
+    email: email.toLowerCase(),
+    password: passwordHash,
+  });
+
+  return res.status(201).json({
+    message: "User registered successfully",
+    user: {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+    },
+  });
+};
+```
+
+### Login Controller Example
+
+``` js
+import bcrypt from "bcryptjs";
+import { User } from "../models/User.js";
+import { Session } from "../models/Session.js";
+import {
+  createAccessToken,
+  createRefreshToken,
+  hashRefreshToken,
+} from "../utils/token.js";
+
+export const loginController = async (req, res) => {
+  const { email, password } = req.body;
+
+  const user = await User.findOne({
+    email: email.toLowerCase(),
+  });
+
+  if (!user) {
+    return res.status(401).json({
+      message: "Invalid email or password",
+    });
+  }
+
+  const isPasswordValid = await bcrypt.compare(
+    password,
+    user.password
+  );
+
+  if (!isPasswordValid) {
+    return res.status(401).json({
+      message: "Invalid email or password",
+    });
+  }
+
+  const accessToken = createAccessToken(user._id);
+  const refreshToken = createRefreshToken();
+  const refreshTokenHash = hashRefreshToken(refreshToken);
+
+  await Session.create({
+    userId: user._id,
+    refreshTokenHash,
+    ip: req.ip,
+    userAgent: req.get("user-agent"),
+    revoke: false,
+  });
+
+  res.cookie("refreshToken", refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/api/auth",
+  });
+
+  return res.json({
+    message: "Login successful",
+    accessToken,
+  });
+};
+```
+
+The important idea is simple:
+
+- Register creates a user and hashes the password.
+- Login validates the password, creates a short-lived access token,
+  creates a refresh token, stores only the hash, and sets the cookie.
+
+### Refresh Controller Example
+
+``` js
+import { Session } from "../models/Session.js";
+import {
+  createAccessToken,
+  createRefreshToken,
+  hashRefreshToken,
+} from "../utils/token.js";
+
+export const refreshController = async (req, res) => {
+  const oldRefreshToken = req.cookies.refreshToken;
+
+  if (!oldRefreshToken) {
+    return res.status(401).json({
+      message: "Refresh token required",
+    });
+  }
+
+  const oldRefreshTokenHash = hashRefreshToken(oldRefreshToken);
+
+  const session = await Session.findOne({
+    refreshTokenHash: oldRefreshTokenHash,
+    revoke: false,
+  });
+
+  if (!session) {
+    return res.status(401).json({
+      message: "Invalid refresh token",
+    });
+  }
+
+  const newRefreshToken = createRefreshToken();
+  const newRefreshTokenHash = hashRefreshToken(newRefreshToken);
+
+  session.refreshTokenHash = newRefreshTokenHash;
+  await session.save();
+
+  const accessToken = createAccessToken(session.userId);
+
+  res.cookie("refreshToken", newRefreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/api/auth",
+  });
+
+  return res.json({
+    accessToken,
+  });
+};
+```
+
+### Logout Controller Example
+
+``` js
+import { Session } from "../models/Session.js";
+
+export const logoutController = async (req, res) => {
+  const refreshToken = req.cookies.refreshToken;
+
+  if (!refreshToken) {
+    return res.status(200).json({
+      message: "Logout successful",
+    });
+  }
+
+  const refreshTokenHash = hashRefreshToken(refreshToken);
+  const session = await Session.findOne({
+    refreshTokenHash,
+    revoke: false,
+  });
+
+  if (session) {
+    session.revoke = true;
+    await session.save();
+  }
+
+  res.clearCookie("refreshToken", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/api/auth",
+  });
+
+  return res.json({
+    message: "Logout successful",
+  });
+};
+```
+
+This completes the main auth controller set for a beginner project:
+
+- Register
+- Login
+- Refresh
+- Logout
+
+------------------------------------------------------------------------
+
 # 34. Authentication Middleware
 
 Create middleware that protects routes using the access token.
